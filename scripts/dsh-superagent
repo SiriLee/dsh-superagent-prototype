@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Manage a local dsh-superagent service (one DSH profile, default `superagent`) without affecting other tmux sessions.
 
+`start` and `restart` print the panel URL with its token; `--open` opens it in a browser.
 `status`, `start`, and `restart` exit 0 while the service runs normally; 1 when it is stopped, duplicated, unreachable, or
 reporting a runtime error, which `restart` may fix; 2 when it runs while a component such as a Source reports an error;
 and 3 when it runs and waits for setup. A restart fixes neither 2 nor 3: they need a person.
@@ -20,6 +21,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import webbrowser
 
 ROOT = Path(__file__).resolve().parent.parent
 ARTIFACTS = ROOT / '.artifacts'
@@ -95,6 +97,31 @@ def state(url):
                 'setup': setup.get('problem'), 'feishu': setup.get('feishuProblem')}
     except (OSError, ValueError, AttributeError):
         return None
+
+
+def panel_url(profile, url):
+    """Return the newest panel URL with its token that a log of `profile` printed for `url`'s port, or None."""
+    base = url.rstrip('/')
+    pattern = re.compile(re.escape(base) + r'/\?token=[A-Za-z0-9_-]+')
+    logs = sorted(ARTIFACTS.glob(f'dsh-superagent-{profile}-*.log'), key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in logs:
+        try:
+            found = pattern.findall(path.read_text(errors='ignore'))
+        except OSError:
+            continue
+        if found:
+            return found[-1]
+    return None
+
+
+def open_panel(url):
+    """Open `url` in a browser, or print why it could not be opened."""
+    try:
+        opened = webbrowser.open(url)
+    except webbrowser.Error:
+        opened = False
+    if not opened:
+        print('No browser could be opened; open the panel URL above by hand.')
 
 
 PART_ERROR = 2
@@ -196,12 +223,17 @@ def start(args):
             code = status(args)
             if current['setup']:
                 print('dsh-superagent is waiting for setup: ' + str(current['setup'].get('detail', '')))
-                print('Open the URL DSH printed in the log, then the dsh-superagent overview.')
+                print('Open the panel URL below, then the dsh-superagent overview.')
             if current['feishu']:
                 print('dsh-superagent runs without Feishu: ' + str(current['feishu'].get('detail', '')))
                 print('Fix it on the Feishu card of the Source settings.')
             for name, detail in part_errors(current).items():
                 print(f'{name} reports an error, which a restart does not fix: {detail}')
+            panel = panel_url(args.profile, args.url)
+            if panel:
+                print('Panel: ' + panel)
+                if args.open:
+                    open_panel(panel)
             return code
         time.sleep(1)
     status(args)
@@ -218,6 +250,8 @@ def main():
     parser.add_argument('--timeout', type=float, default=60, help='Startup timeout in seconds.')
     parser.add_argument('--stop-timeout', type=float, default=300,
                         help='Graceful shutdown timeout in seconds; running Executor Sessions finish their step first.')
+    parser.add_argument('--open', action='store_true',
+                        help='Open the panel in a browser after start or restart.')
     parser.add_argument('--respect-stop', action='store_true',
                         help='For monitoring: never start/restart after an intentional stop.')
     args = parser.parse_args()
